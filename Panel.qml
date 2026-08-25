@@ -135,7 +135,6 @@ Panel {
       onMoveRequested: function(dx, dy) {
         if (dy !== 0) root.moveSelection(dy)
       }
-      onActivateRequested: root.activateSelected()
       onDeleteRequested: {
         if (root.selectedEntry) root.callHost("deleteEntry", root.selectedEntry.id)
       }
@@ -301,7 +300,6 @@ Panel {
               event.accepted = true
             } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
               keyCatcher.forceActiveFocus()
-              root.activateSelected()
               event.accepted = true
             }
           }
@@ -439,7 +437,7 @@ Panel {
           Text {
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-            text: "Enter copies · p pins · / searches"
+            text: "c copies · p pins · / searches"
             color: root.dim
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption

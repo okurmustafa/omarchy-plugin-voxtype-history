@@ -35,7 +35,7 @@ Hold F9 or toggle Super+Ctrl+X to dictate as usual. Each finished transcript app
 | Action | How |
 | --- | --- |
 | Open | Click the bar icon |
-| Copy | Click a row, or Enter |
+| Copy | Click a row, or `c` |
 | Pin | `p` or the pin button (pinned rows survive prune and Clear) |
 | Delete | `x` or the delete button |
 | Search | `/` |
