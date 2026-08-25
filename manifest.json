@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.okurmustafa.voxtype-history",
+  "name": "Voxtype History",
+  "version": "1.0.0",
+  "author": "Mustafa Okur",
+  "license": "MIT",
+  "description": "Search, copy, and pin past Voxtype dictations from the Omarchy bar. Captures each transcript through Voxtype's post-process hook.",
+  "homepage": "https://github.com/okurmustafa/omarchy-plugin-voxtype-history",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Voxtype History",
+    "description": "Dictation history: search, copy, pin, and delete past transcripts.",
+    "category": "Productivity",
+    "aliases": ["voxtype", "dictation", "history", "transcripts"],
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
