@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -84,15 +85,23 @@ def read_json(path: Path, fallback):
         return fallback
 
 
+def file_mode(path: Path, fallback: int = 0o600) -> int:
+    try:
+        return stat.S_IMODE(path.stat().st_mode)
+    except OSError:
+        return fallback
+
+
 def write_text_atomic(path: Path, text: str, mode: int = 0o600) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as handle:
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        os.fchmod(handle.fileno(), mode)
         handle.write(text)
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(tmp, path)
-    os.chmod(path, mode)
 
 
 def default_meta() -> dict:
@@ -235,10 +244,11 @@ def extract_timeout_ms(body: str) -> int | None:
 
 def enable_in_config(config_path: Path, hook: str, timeout_ms: int) -> dict:
     original = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+    original_mode = file_mode(config_path) if config_path.exists() else 0o600
     backup = None
     if original:
         backup = config_path.with_name(f"{config_path.name}.bak.{int(time.time())}")
-        backup.write_text(original, encoding="utf-8")
+        write_text_atomic(backup, original, mode=original_mode)
 
     previous_command = None
     previous_timeout = None
@@ -266,7 +276,7 @@ def enable_in_config(config_path: Path, hook: str, timeout_ms: int) -> dict:
         if not updated.endswith("\n"):
             updated += "\n"
 
-    write_text_atomic(config_path, updated, mode=0o644)
+    write_text_atomic(config_path, updated, mode=original_mode)
     return {
         "backup": str(backup) if backup else None,
         "previousCommand": previous_command,
@@ -297,7 +307,7 @@ def disable_in_config(config_path: Path, previous_command: str | None, previous_
         updated = original[:start] + original[end:]
         updated = re.sub(r"\n{3,}", "\n\n", updated)
 
-    write_text_atomic(config_path, updated, mode=0o644)
+    write_text_atomic(config_path, updated, mode=file_mode(config_path))
     return {"wired": False}
 
 
