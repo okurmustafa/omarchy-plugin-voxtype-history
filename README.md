@@ -1,4 +1,6 @@
-# Voxtype History
+# Dictation (Voxtype) History
+
+![Dictation (Voxtype) History](preview.png)
 
 Search, copy, and pin past Voxtype dictations from the Omarchy bar.
 
@@ -64,3 +66,12 @@ omarchy plugin remove io.github.okurmustafa.voxtype-history
 ```
 
 Run `disable` first if you enabled capture, so Voxtype is not left pointing at a missing hook.
+
+## Requirements
+
+- [Voxtype](https://github.com/cjpais/voxtype) (Omarchy menu → Install → AI → Dictation)
+- `wl-copy` for clipboard copy (included with Omarchy)
+
+## License
+
+MIT. See [LICENSE](LICENSE).

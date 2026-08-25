@@ -223,7 +223,7 @@ Panel {
 
             Text {
               width: parent.width
-              text: "Dictation history"
+              text: "Dictation (Voxtype) History"
               color: root.contentForeground
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.subtitle

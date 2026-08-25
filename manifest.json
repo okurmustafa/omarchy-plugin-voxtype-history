@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "io.github.okurmustafa.voxtype-history",
-  "name": "Voxtype History",
+  "name": "Dictation (Voxtype) History",
   "version": "1.0.0",
   "author": "Mustafa Okur",
   "license": "MIT",
@@ -14,8 +14,8 @@
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "Voxtype History",
-    "description": "Dictation history: search, copy, pin, and delete past transcripts.",
+    "displayName": "Dictation (Voxtype) History",
+    "description": "Search, copy, pin, and delete past Voxtype transcripts.",
     "category": "Productivity",
     "aliases": ["voxtype", "dictation", "history", "transcripts"],
     "allowMultiple": false,

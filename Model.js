@@ -132,9 +132,9 @@ function previewText(text, maxLength) {
 function barTooltip(wired, paused, recordingState, count, today) {
   if (recordingState === "recording") return "Recording…"
   if (recordingState === "transcribing") return "Transcribing…"
-  if (!wired) return "Dictation history — capture is off"
-  if (paused) return "Dictation history — paused"
-  if (today > 0) return "Dictation history — " + today + " today"
-  if (count > 0) return "Dictation history — " + count + " saved"
-  return "Dictation history"
+  if (!wired) return "Dictation (Voxtype) History — capture is off"
+  if (paused) return "Dictation (Voxtype) History — paused"
+  if (today > 0) return "Dictation (Voxtype) History — " + today + " today"
+  if (count > 0) return "Dictation (Voxtype) History — " + count + " saved"
+  return "Dictation (Voxtype) History"
 }

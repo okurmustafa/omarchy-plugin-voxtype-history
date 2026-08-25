@@ -43,7 +43,7 @@ assertEqual(filtered[0].id, "ccc", "filter keeps the matching row")
 
 assertEqual(M.previewText("  many\n  spaces  here  ", 8), "many sp…", "preview collapses whitespace")
 assertEqual(M.relativeTime("2026-08-25T21:00:00Z", now), "just now", "relative time for fresh entries")
-assertEqual(M.barTooltip(false, false, "idle", 0, 0), "Dictation history — capture is off", "tooltip when unwired")
+assertEqual(M.barTooltip(false, false, "idle", 0, 0), "Dictation (Voxtype) History — capture is off", "tooltip when unwired")
 assertEqual(M.barTooltip(true, false, "recording", 4, 2), "Recording…", "tooltip while recording")
 
 const wired = M.configLooksWired(`
