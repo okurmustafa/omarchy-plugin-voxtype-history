@@ -309,6 +309,7 @@ Panel {
           visible: root.lastError !== ""
           width: parent.width
           wrapMode: Text.WordWrap
+          textFormat: Text.PlainText
           text: root.lastError
           color: root.urgent
           font.family: root.contentFontFamily
@@ -377,6 +378,7 @@ Panel {
 
               Text {
                 width: parent.width
+                textFormat: Text.PlainText
                 text: Model.previewText(modelData.text, 72)
                 color: root.contentForeground
                 font.family: root.contentFontFamily
