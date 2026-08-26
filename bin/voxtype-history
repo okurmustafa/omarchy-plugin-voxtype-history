@@ -8,13 +8,16 @@ import fcntl
 import json
 import os
 import re
+import select
 import shutil
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import tomllib
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,17 +29,22 @@ MAX_TRANSCRIPT_BYTES = 256 * 1024
 MAX_HISTORY_BYTES = 8 * 1024 * 1024
 MAX_CONFIG_BYTES = 1024 * 1024
 MAX_META_BYTES = 64 * 1024
+MAX_CHAIN_TIMEOUT_MS = 600000
+# Extra budget written into Voxtype's timeout_ms beyond the chained command's own
+# timeout, so the hook always finishes (or kills the chain) before Voxtype
+# SIGKILLs the hook and orphans the chain.
+CHAIN_BUDGET_MARGIN_MS = 2000
+# Below HOOK_TIMEOUT_MS so a contended lock still lets `log` emit the transcript
+# before Voxtype gives up on the hook.
+LOCK_TIMEOUT_S = 3.0
 OPEN_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 OPEN_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+OPEN_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+OPEN_NOCTTY = getattr(os, "O_NOCTTY", 0)
 
 
 def data_dir() -> Path:
     root = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local/share")
-    return Path(root) / PLUGIN_NAME
-
-
-def config_dir() -> Path:
-    root = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
     return Path(root) / PLUGIN_NAME
 
 
@@ -59,31 +67,58 @@ def lock_path() -> Path:
 
 
 def hook_command() -> str:
-    return f"{Path(__file__).resolve()} log"
+    # Single-quoted for the shell Voxtype runs the command with, so a path
+    # containing spaces cannot split into extra arguments.
+    return f"'{Path(__file__).resolve()}' log"
 
 
 def ensure_dirs() -> None:
     path = data_dir()
-    path.mkdir(parents=True, exist_ok=True)
-    os.chmod(path, 0o700)
-    config_dir().mkdir(parents=True, exist_ok=True)
+    refuse_symlink(path)
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # Tighten mode via fd so a replaced data dir cannot redirect the chmod.
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | OPEN_NOFOLLOW | OPEN_CLOEXEC
+    fd = os.open(path, flags)
+    try:
+        os.fchmod(fd, 0o700)
+    finally:
+        os.close(fd)
 
 
 class StoreLock:
     def __init__(self) -> None:
-        self.handle = None
+        self.fd = -1
 
     def __enter__(self) -> "StoreLock":
         ensure_dirs()
-        self.handle = open(lock_path(), "a+", encoding="utf-8")
-        fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX)
+        path = lock_path()
+        flags = os.O_RDWR | os.O_CREAT | OPEN_NOFOLLOW | OPEN_CLOEXEC | OPEN_NONBLOCK | OPEN_NOCTTY
+        fd = os.open(path, flags, 0o600)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError(f"refusing non-regular lock file: {path}")
+            deadline = time.monotonic() + LOCK_TIMEOUT_S
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise OSError(f"timed out waiting for lock: {path}") from None
+                    time.sleep(0.05)
+        except BaseException:
+            os.close(fd)
+            raise
+        self.fd = fd
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        if self.handle is not None:
-            fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
-            self.handle.close()
-            self.handle = None
+        if self.fd >= 0:
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_UN)
+            finally:
+                os.close(self.fd)
+                self.fd = -1
 
 
 def path_present(path: Path) -> bool:
@@ -112,8 +147,16 @@ def clip_transcript(text: str, max_bytes: int = MAX_TRANSCRIPT_BYTES) -> str:
 
 def read_bytes_limited(path: Path, max_bytes: int, truncate: bool = True) -> bytes:
     refuse_symlink(path)
-    fd = os.open(path, os.O_RDONLY | OPEN_NOFOLLOW | OPEN_CLOEXEC)
+    flags = os.O_RDONLY | OPEN_NOFOLLOW | OPEN_CLOEXEC | OPEN_NONBLOCK | OPEN_NOCTTY
+    fd = os.open(path, flags)
     try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError(f"refusing non-regular file: {path}")
+        try:
+            os.set_blocking(fd, True)
+        except OSError:
+            pass
         chunks = []
         total = 0
         limit = max_bytes if truncate else max_bytes + 1
@@ -330,6 +373,47 @@ def extract_timeout_ms(body: str) -> int | None:
     return int(match.group(1))
 
 
+def toml_quote(value: str) -> str:
+    """Escape a string for embedding in a double-quoted TOML basic string."""
+    out = []
+    for ch in value:
+        if ch == "\\":
+            out.append("\\\\")
+        elif ch == '"':
+            out.append('\\"')
+        elif ch == "\n":
+            out.append("\\n")
+        elif ch == "\r":
+            out.append("\\r")
+        elif ch == "\t":
+            out.append("\\t")
+        elif ord(ch) < 0x20 or ch == "\x7f":
+            out.append(f"\\u{ord(ch):04X}")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def extract_previous_chain(original: str, section_body: str) -> tuple[str | None, int | None]:
+    """Previous post_process command and timeout, preferring a real TOML parse
+    so escaped strings round-trip; regex fallback for unparseable configs."""
+    try:
+        parsed = tomllib.loads(original)
+    except Exception:
+        parsed = None
+    if isinstance(parsed, dict):
+        output = parsed.get("output")
+        post = output.get("post_process") if isinstance(output, dict) else None
+        post = post if isinstance(post, dict) else {}
+        command = post.get("command")
+        timeout = post.get("timeout_ms")
+        return (
+            command if isinstance(command, str) and command else None,
+            timeout if isinstance(timeout, int) and timeout > 0 else None,
+        )
+    return uncommented_command_line(section_body), extract_timeout_ms(section_body)
+
+
 def enable_in_config(config_path: Path, hook: str, timeout_ms: int) -> dict:
     original = ""
     original_mode = 0o600
@@ -345,16 +429,22 @@ def enable_in_config(config_path: Path, hook: str, timeout_ms: int) -> dict:
     previous_timeout = None
     section = post_process_section(original)
     if section:
-        previous_command = uncommented_command_line(section.group(1))
-        previous_timeout = extract_timeout_ms(section.group(1))
+        previous_command, previous_timeout = extract_previous_chain(original, section.group(1))
         if previous_command and PLUGIN_NAME in previous_command:
             previous_command = None
             previous_timeout = None
 
+    # Voxtype's timeout must cover the chained command's own timeout, or Voxtype
+    # SIGKILLs the hook mid-chain (losing the dictation, orphaning the chain).
+    effective_timeout = timeout_ms
+    if previous_command:
+        chain_ms = min(previous_timeout or 30000, MAX_CHAIN_TIMEOUT_MS)
+        effective_timeout = max(timeout_ms, chain_ms + CHAIN_BUDGET_MARGIN_MS)
+
     block = (
         "[output.post_process]\n"
-        f'command = "{hook}"\n'
-        f"timeout_ms = {timeout_ms}\n"
+        f'command = "{toml_quote(hook)}"\n'
+        f"timeout_ms = {effective_timeout}\n"
     )
 
     if section:
@@ -388,7 +478,7 @@ def disable_in_config(config_path: Path, previous_command: str | None, previous_
         timeout = previous_timeout if previous_timeout else 30000
         block = (
             "[output.post_process]\n"
-            f'command = "{previous_command}"\n'
+            f'command = "{toml_quote(previous_command)}"\n'
             f"timeout_ms = {timeout}\n"
         )
         start, end = section.span()
@@ -403,12 +493,75 @@ def disable_in_config(config_path: Path, previous_command: str | None, previous_
 
 
 def restart_voxtype() -> None:
-    subprocess.run(
-        ["systemctl", "--user", "try-restart", "voxtype.service"],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    try:
+        subprocess.run(
+            ["systemctl", "--user", "try-restart", "voxtype.service"],
+            check=False,
+            timeout=30,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def write_stdin_deadline(handle, data: bytes, deadline: float) -> bool:
+    """Write stdin without blocking past deadline. Closes handle.
+    False on timeout or unexpected write error; a child that stops reading
+    on purpose (EPIPE) is not a failure — its exit code decides."""
+    fd = handle.fileno()
+    try:
+        os.set_blocking(fd, False)
+    except OSError:
+        pass
+    view = memoryview(data)
+    offset = 0
+    on_time = True
+    try:
+        while offset < len(view):
+            wait = deadline - time.monotonic()
+            if wait <= 0:
+                on_time = False
+                break
+            try:
+                _, ready, _ = select.select([], [fd], [], wait)
+            except OSError:
+                on_time = False
+                break
+            if not ready:
+                on_time = False
+                break
+            try:
+                written = os.write(fd, view[offset : offset + 65536])
+            except BlockingIOError:
+                continue
+            except BrokenPipeError:
+                # Child closed stdin on purpose (e.g. head); its exit code decides.
+                break
+            except OSError:
+                on_time = False
+                break
+            if written == 0:
+                break
+            offset += written
+        return on_time
+    finally:
+        try:
+            handle.close()
+        except OSError:
+            pass
+
+
+def kill_chain(proc: subprocess.Popen) -> None:
+    """Kill the chained command and any grandchildren it spawned."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        proc.kill()
+    except (ProcessLookupError, PermissionError):
+        pass
 
 
 def run_chain(command: str, text: str, timeout_ms: int) -> str:
@@ -422,6 +575,7 @@ def run_chain(command: str, text: str, timeout_ms: int) -> str:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             shell=True,
+            start_new_session=True,
         )
     except OSError:
         return text
@@ -429,6 +583,10 @@ def run_chain(command: str, text: str, timeout_ms: int) -> str:
     chunks: list[bytes] = []
     total = 0
     overflow = False
+    deadline = time.monotonic() + max(1, timeout_ms) / 1000
+
+    def remaining() -> float:
+        return max(0.0, deadline - time.monotonic())
 
     def reader() -> None:
         nonlocal total, overflow
@@ -450,23 +608,26 @@ def run_chain(command: str, text: str, timeout_ms: int) -> str:
     thread = threading.Thread(target=reader, daemon=True)
     thread.start()
     try:
+        write_ok = True
         try:
             assert proc.stdin is not None
-            proc.stdin.write(payload)
-            proc.stdin.close()
+            write_ok = write_stdin_deadline(proc.stdin, payload, deadline)
         except OSError:
             pass
-        thread.join(timeout=max(1, timeout_ms) / 1000)
-        if thread.is_alive() or overflow:
-            proc.kill()
+        thread.join(timeout=remaining())
+        timed_out = (not write_ok) or thread.is_alive()
+        if timed_out or overflow:
+            kill_chain(proc)
             thread.join(timeout=1)
         try:
             proc.wait(timeout=1)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            kill_chain(proc)
             proc.wait()
             return text
         decoded = b"".join(chunks)[:MAX_TRANSCRIPT_BYTES].decode("utf-8", errors="replace")
+        if timed_out:
+            return text
         if overflow:
             return decoded if decoded.strip() else text
         if proc.returncode != 0:
@@ -488,7 +649,10 @@ def run_chain(command: str, text: str, timeout_ms: int) -> str:
 def copy_text(text: str) -> None:
     if not shutil.which("wl-copy"):
         raise SystemExit("wl-copy is not installed")
-    result = subprocess.run(["wl-copy"], input=text, text=True, check=False)
+    try:
+        result = subprocess.run(["wl-copy"], input=text, text=True, check=False, timeout=10)
+    except subprocess.TimeoutExpired:
+        raise SystemExit("wl-copy timed out")
     if result.returncode != 0:
         raise SystemExit("wl-copy failed")
 
@@ -496,16 +660,27 @@ def copy_text(text: str) -> None:
 def cmd_log(_args: argparse.Namespace) -> int:
     text = clip_transcript(read_stdin_limited(MAX_TRANSCRIPT_BYTES))
     output = text
-    with StoreLock():
-        meta = load_meta()
+    # Voxtype types whatever we emit; never let store failures swallow a dictation.
+    # The lock is held only around store reads/writes, never across the chain,
+    # so panel commands stay responsive while a postprocessor runs.
+    try:
+        with StoreLock():
+            meta = load_meta()
         chain = meta.get("previousCommand")
-        timeout = int(meta.get("previousTimeoutMs") or 30000)
+        try:
+            timeout = int(meta.get("previousTimeoutMs") or 30000)
+        except (TypeError, ValueError):
+            timeout = 30000
+        timeout = min(MAX_CHAIN_TIMEOUT_MS, max(1, timeout))
         if chain:
             output = run_chain(str(chain), text, timeout)
         if not meta.get("paused") and text.strip():
-            entries = load_entries()
-            entries.append(new_entry(output if output.strip() else text))
-            dump_entries(prune_entries(entries, meta["maxEntries"]))
+            with StoreLock():
+                entries = load_entries()
+                entries.append(new_entry(output if output.strip() else text))
+                dump_entries(prune_entries(entries, meta["maxEntries"]))
+    except Exception:
+        pass
     sys.stdout.write(output)
     return 0
 
@@ -602,9 +777,15 @@ def cmd_enable(_args: argparse.Namespace) -> int:
     config = voxtype_config_path()
     if not path_present(config):
         raise SystemExit(f"voxtype config not found: {config}")
+    # The hook path is embedded in a single-quoted shell word inside a TOML
+    # string; refuse any path that could escape either quoting layer.
+    raw_path = str(Path(__file__).resolve())
+    if any(ch in raw_path for ch in ("'", '"', "\\", "\n", "\r")):
+        raise SystemExit(f"refusing hook path with quote, backslash, or newline: {raw_path}")
+    hook = hook_command()
     with StoreLock():
         meta = load_meta()
-        result = enable_in_config(config, hook_command(), HOOK_TIMEOUT_MS)
+        result = enable_in_config(config, hook, HOOK_TIMEOUT_MS)
         if result.get("previousCommand"):
             meta["previousCommand"] = result["previousCommand"]
             meta["previousTimeoutMs"] = result.get("previousTimeoutMs")

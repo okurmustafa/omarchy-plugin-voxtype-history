@@ -28,7 +28,7 @@ omarchy bar move io.github.okurmustafa.voxtype-history --section right
 2. Click the history icon in the bar.
 3. Click **Enable capture**. That backs up `~/.config/voxtype/config.toml`, points `[output.post_process]` at this plugin's hook, and restarts the Voxtype user service.
 
-If you already had a post-process command (for example an Ollama cleanup), the hook logs first and then pipes the text through that command.
+If you already had a post-process command (for example an Ollama cleanup), the hook pipes the text through that command and logs the result.
 
 ## Usage
 

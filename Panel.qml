@@ -388,6 +388,7 @@ Panel {
 
               Text {
                 width: parent.width
+                textFormat: Text.PlainText
                 text: (modelData.pinned ? "Pinned · " : "") + Model.relativeTime(modelData.ts, new Date(root.nowMs))
                 color: root.dim
                 font.family: root.contentFontFamily

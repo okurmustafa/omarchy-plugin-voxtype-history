@@ -42,7 +42,7 @@ function parseMeta(raw) {
 
 function configLooksWired(raw) {
   var text = String(raw || "")
-  var section = text.match(/^\[output\.post_process\][\s\S]*?(?=^\[|\Z)/m)
+  var section = text.match(/^\[output\.post_process\][\s\S]*?(?=^\[|(?![\s\S]))/m)
   var body = section ? section[0] : text
   var lines = body.split("\n")
   for (var i = 0; i < lines.length; i++) {
