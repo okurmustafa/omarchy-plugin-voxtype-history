@@ -99,7 +99,7 @@ BarWidget {
   onWiredChanged: injectPanel()
 
   Process {
-    command: ["mkdir", "-p", root.dataDir]
+    command: ["mkdir", "-p", "-m", "700", root.dataDir]
     running: true
   }
 
