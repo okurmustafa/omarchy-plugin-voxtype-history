@@ -94,9 +94,6 @@ BarWidget {
 
   onBarChanged: injectPanel()
   onSettingsChanged: injectPanel()
-  onEntriesChanged: injectPanel()
-  onPausedChanged: injectPanel()
-  onWiredChanged: injectPanel()
 
   Process {
     command: ["mkdir", "-p", "-m", "700", root.dataDir]

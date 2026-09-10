@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.okurmustafa.voxtype-history",
   "name": "Dictation (Voxtype) History",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "author": "Mustafa Okur",
   "license": "MIT",
   "description": "Search, copy, and pin past Voxtype dictations from the Omarchy bar. Captures each transcript through Voxtype's post-process hook.",

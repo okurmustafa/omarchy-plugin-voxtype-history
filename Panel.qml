@@ -55,11 +55,15 @@ Panel {
   }
 
   function close() {
-    setCenterHoverRevealSuppressed(false)
+    // Hide first. Third-party bars expose a readonly
+    // centerHoverRevealSuppressed; assigning it throws and used to leave
+    // the overlay mapped with exclusive keyboard focus.
+    root.controller.hide()
     query = ""
     clearConfirmOpen = false
     cursorActive = false
-    root.controller.hide()
+    searchFocused = false
+    setCenterHoverRevealSuppressed(false)
   }
 
   function toggle() {
@@ -74,7 +78,9 @@ Panel {
   }
 
   function setCenterHoverRevealSuppressed(value) {
-    if (root.bar && "centerHoverRevealSuppressed" in root.bar)
+    if (root.bar && typeof root.bar.setCenterHoverRevealSuppressed === "function")
+      root.bar.setCenterHoverRevealSuppressed(value)
+    else if (root.bar && "centerHoverRevealSuppressed" in root.bar)
       root.bar.centerHoverRevealSuppressed = value
   }
 
